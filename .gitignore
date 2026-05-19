@@ -1,0 +1,6 @@
+# Bloquear configuraciones y bloqueos de agentes de IA
+.agents/
+skills-lock.json
+
+# Opcional: Si usas VS Code, también es buena idea ignorar su carpeta de configuración local
+.vscode/
