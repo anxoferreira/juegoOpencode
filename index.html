@@ -777,21 +777,34 @@
             this.speed = 85;
             this.hpMax = 14;
             this.hp = 14;
-            this.flashFrames = 0; // exactly 2 frames on hit
+            this.flashFrames = 0;
             this.touchDmg = 8;
             this._touchCd = 0;
             this._animT = 0;
             this._phase = rand(0, TAU);
 
+            // enemy type: "normal"|"runner"|"tank"|"bomber"|"healer"|"shield"
+            this.enemyType = "normal";
+
+            // healer: heal aura timer
+            this._healAuraT = 0;
+            // shield: shield facing angle
+            this._shieldAngle = 0;
+            // bomber: explosion pending
+            this._exploding = false;
+            this._explodeT = 0;
+
             // type/boss
             this.isBoss = false;
             this._bossPulse = 0;
             this._bossPhase = 0;
+            this._bossPhasePrev = -1;   // detect transitions
+            this._bossInvulT = 0;       // brief invuln on phase transition
 
             // boss shooting
             this._shotCd = 0;
           }
-          reset(x, y, hp, speed) {
+          reset(x, y, hp, speed, type) {
             this.active = true;
             this.x = x;
             this.y = y;
@@ -803,7 +816,14 @@
             this.isBoss = false;
             this._bossPulse = 0;
             this._bossPhase = 0;
+            this._bossPhasePrev = -1;
+            this._bossInvulT = 0;
             this._shotCd = 0;
+            this.enemyType = type || "normal";
+            this._healAuraT = 0;
+            this._shieldAngle = 0;
+            this._exploding = false;
+            this._explodeT = 0;
           }
           resetBoss(x, y, hp, speed) {
             this.reset(x, y, hp, speed);
@@ -814,41 +834,117 @@
             this._bossPhase = 0;
             this._shotCd = 0;
           }
-          takeDamage(amount) {
+          takeDamage(amount, fromX, fromY) {
+            // Boss invulnerability window on phase transition
+            if (this.isBoss && this._bossInvulT > 0) return false;
+            // Shield: immune from the front 120-degree arc
+            if (this.enemyType === "shield" && fromX !== undefined) {
+              const ax = fromX - this.x;
+              const ay = fromY - this.y;
+              const angleDiff = Math.abs(Math.atan2(ay, ax) - this._shieldAngle);
+              const wrapped = Math.min(angleDiff, Math.PI * 2 - angleDiff);
+              if (wrapped < Math.PI * 0.65) return false; // blocked
+            }
             this.hp -= amount;
             this.flashFrames = 2;
             return this.hp <= 0;
           }
-          update(dt, player) {
+          update(dt, player, world) {
             if (!this.active) return;
             this._animT += dt;
             if (this.isBoss) this._bossPulse += dt;
 
+            // ── BOSS phase logic ───────────────────────────────────────────
             if (this.isBoss) {
               const hpPct = this.hpMax > 0 ? this.hp / this.hpMax : 0;
               const phase = hpPct <= 0.33 ? 2 : hpPct <= 0.66 ? 1 : 0;
-              this._bossPhase = phase;
 
-              // Phase difficulty: gets faster/more aggressive as it loses HP.
-              const base = this.speed;
-              const mul = phase === 0 ? 1 : phase === 1 ? 1.18 : 1.35;
+              // Phase transition: brief flash + invulnerability
+              if (phase !== this._bossPhasePrev && this._bossPhasePrev !== -1) {
+                this._bossInvulT = 0.6;
+                this.flashFrames = 18;
+              }
+              if (phase !== this._bossPhase) this._bossPhasePrev = this._bossPhase;
+              this._bossPhase = phase;
+              this._bossInvulT = Math.max(0, this._bossInvulT - dt);
+
+              const mul = phase === 0 ? 1 : phase === 1 ? 1.22 : 1.42;
               const dxp = player.x - this.x;
               const dyp = player.y - this.y;
               const distp = Math.sqrt(dxp * dxp + dyp * dyp);
-              // Slight "lunge" by biasing movement when close.
-              const near = distp < 140 ? 1.18 : 1;
+              const near = distp < 140 ? 1.22 : 1;
               this._bossSpeedMul = mul * near;
+
+              // Phase 2: erratic diagonal orbit
+              if (phase === 1) {
+                const orbitT = this._animT * 2.2;
+                this._orbitOffX = Math.cos(orbitT) * 55;
+                this._orbitOffY = Math.sin(orbitT * 1.4) * 38;
+              } else {
+                this._orbitOffX = 0;
+                this._orbitOffY = 0;
+              }
             }
 
+            // ── Movement per type ─────────────────────────────────────────
             const dx = player.x - this.x;
             const dy = player.y - this.y;
             const dist = Math.sqrt(dx * dx + dy * dy);
-            if (dist > 1e-6) {
-              const sp = this.isBoss ? (this.speed * (this._bossSpeedMul ?? 1)) : this.speed;
-              this.x += (dx / dist) * sp * dt;
-              this.y += (dy / dist) * sp * dt;
+
+            if (this.enemyType === "healer") {
+              // Healer stays back, orbits at ~200px from player
+              this._healAuraT += dt;
+              const orbitA = this._healAuraT * 1.1 + this._phase;
+              const targetX = player.x + Math.cos(orbitA) * 220;
+              const targetY = player.y + Math.sin(orbitA) * 220;
+              const tdx = targetX - this.x;
+              const tdy = targetY - this.y;
+              const td = Math.sqrt(tdx * tdx + tdy * tdy);
+              if (td > 1e-6) {
+                this.x += (tdx / td) * this.speed * dt;
+                this.y += (tdy / td) * this.speed * dt;
+              }
+              // Heal nearby enemies
+              if (world && Math.floor(this._healAuraT * 2) !== Math.floor((this._healAuraT - dt) * 2)) {
+                const ens = world.enemies.enemies;
+                for (let i = 0; i < ens.length; i++) {
+                  const e = ens[i];
+                  if (!e.active || e === this) continue;
+                  const hdx = e.x - this.x;
+                  const hdy = e.y - this.y;
+                  if (hdx * hdx + hdy * hdy < 120 * 120) {
+                    e.hp = Math.min(e.hpMax, e.hp + 1.5);
+                  }
+                }
+              }
+            } else if (this.enemyType === "shield") {
+              // Shield faces player, only vulnerable from behind
+              if (dist > 1e-6) this._shieldAngle = Math.atan2(dy, dx);
+              if (dist > 1e-6) {
+                this.x += (dx / dist) * this.speed * dt;
+                this.y += (dy / dist) * this.speed * dt;
+              }
+            } else if (this.isBoss) {
+              // Boss: moves toward player + optional orbit offset
+              const ox = this._orbitOffX || 0;
+              const oy = this._orbitOffY || 0;
+              const tx = player.x + ox - this.x;
+              const ty = player.y + oy - this.y;
+              const td = Math.sqrt(tx * tx + ty * ty);
+              if (td > 1e-6) {
+                const sp = this.speed * (this._bossSpeedMul ?? 1);
+                this.x += (tx / td) * sp * dt;
+                this.y += (ty / td) * sp * dt;
+              }
+            } else {
+              // Normal, runner, tank, bomber: straight chase
+              if (dist > 1e-6) {
+                this.x += (dx / dist) * this.speed * dt;
+                this.y += (dy / dist) * this.speed * dt;
+              }
             }
 
+            // Touch damage
             this._touchCd = Math.max(0, this._touchCd - dt);
             if (this._touchCd <= 0 && dist < this.r + player.r) {
               player.takeDamage(this.touchDmg);
@@ -899,39 +995,134 @@
               ctx.restore();
             }
 
-            ctx.beginPath();
-            const rr = this.isBoss ? 22 : 13;
-            const ww = this.isBoss ? 18 : 12;
-            const hh = this.isBoss ? 24 : 16;
-            ctx.moveTo(0, -rr);
-            ctx.quadraticCurveTo(ww, -rr + 3, ww, 0);
-            ctx.quadraticCurveTo(ww, hh, 0, hh);
-            ctx.quadraticCurveTo(-ww, hh, -ww, 0);
-            ctx.quadraticCurveTo(-ww, -rr + 3, 0, -rr);
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
+            // ── draw body by type ──────────────────────────────────────
+            if (!this.isBoss && this.enemyType === "runner") {
+              // Thin, elongated, cyan streak
+              ctx.fillStyle = flashing ? "#ffffff" : "#1ef0c0";
+              ctx.strokeStyle = "rgba(0,0,0,0.78)"; ctx.lineWidth = 2;
+              ctx.beginPath();
+              ctx.ellipse(0, 0, 6, 14, 0, 0, TAU);
+              ctx.fill(); ctx.stroke();
+              // motion lines
+              ctx.save(); ctx.globalAlpha = 0.45;
+              ctx.strokeStyle = "#1ef0c0"; ctx.lineWidth = 1.5;
+              for (let ml = 1; ml <= 3; ml++) {
+                ctx.beginPath();
+                ctx.moveTo(-4, ml * 5); ctx.lineTo(4, ml * 5); ctx.stroke();
+              }
+              ctx.restore();
+              // tiny eyes
+              ctx.fillStyle = flashing ? "#ff2a2a" : "rgba(0,0,0,0.8)";
+              ctx.fillRect(-3, -10, 2, 2); ctx.fillRect(1, -10, 2, 2);
+            } else if (!this.isBoss && this.enemyType === "tank") {
+              // Big, armored, dark red square-ish body
+              ctx.fillStyle = flashing ? "#ffffff" : "#8b1a1a";
+              ctx.strokeStyle = "rgba(0,0,0,0.88)"; ctx.lineWidth = 4;
+              ctx.beginPath();
+              ctx.roundRect(-16, -14, 32, 30, 5);
+              ctx.fill(); ctx.stroke();
+              // armor plates
+              ctx.save(); ctx.globalAlpha = 0.4;
+              ctx.strokeStyle = "rgba(255,180,0,0.5)"; ctx.lineWidth = 2;
+              ctx.strokeRect(-12, -10, 24, 10);
+              ctx.strokeRect(-12, 4, 24, 8);
+              ctx.restore();
+              // eyes
+              ctx.fillStyle = flashing ? "#ff2a2a" : "#ff4444";
+              ctx.fillRect(-8, -8, 5, 4); ctx.fillRect(3, -8, 5, 4);
+            } else if (!this.isBoss && this.enemyType === "bomber") {
+              // Pulsing orange/red round bomb shape
+              const bPulse = Math.sin(this._animT * 8) * 0.15 + 1;
+              ctx.save(); ctx.scale(bPulse, bPulse);
+              ctx.fillStyle = flashing ? "#ffffff" : "#ff6a00";
+              ctx.strokeStyle = "rgba(0,0,0,0.85)"; ctx.lineWidth = 3;
+              ctx.beginPath(); ctx.arc(0, 2, 13, 0, TAU);
+              ctx.fill(); ctx.stroke();
+              // fuse
+              ctx.strokeStyle = flashing ? "#ff2a2a" : "#f0c040";
+              ctx.lineWidth = 2;
+              ctx.beginPath(); ctx.moveTo(0, -11); ctx.quadraticCurveTo(6, -18, 2, -22);
+              ctx.stroke();
+              // spark
+              ctx.fillStyle = "#ffe060";
+              ctx.beginPath(); ctx.arc(2 + Math.sin(this._animT*15)*2, -22, 2, 0, TAU); ctx.fill();
+              // skull symbol
+              ctx.fillStyle = flashing ? "#ff2a2a" : "rgba(0,0,0,0.6)";
+              ctx.beginPath(); ctx.arc(0, 2, 6, 0, TAU); ctx.fill();
+              ctx.fillStyle = "#ff6a00";
+              ctx.fillRect(-4, 4, 3, 3); ctx.fillRect(1, 4, 3, 3);
+              ctx.restore();
+            } else if (!this.isBoss && this.enemyType === "healer") {
+              // Green hooded figure with cross
+              ctx.fillStyle = flashing ? "#ffffff" : "#1a7a2a";
+              ctx.strokeStyle = "rgba(0,0,0,0.78)"; ctx.lineWidth = 3;
+              ctx.beginPath();
+              ctx.moveTo(0, -14); ctx.quadraticCurveTo(13, -6, 13, 6);
+              ctx.quadraticCurveTo(12, 18, 0, 18);
+              ctx.quadraticCurveTo(-12, 18, -13, 6);
+              ctx.quadraticCurveTo(-13, -6, 0, -14);
+              ctx.closePath(); ctx.fill(); ctx.stroke();
+              // heal aura ring
+              ctx.save(); ctx.globalAlpha = 0.3 + Math.sin(this._healAuraT * 4) * 0.15;
+              ctx.strokeStyle = "#44ff88"; ctx.lineWidth = 2;
+              ctx.beginPath(); ctx.arc(0, 2, 18 + Math.sin(this._healAuraT * 3) * 2, 0, TAU);
+              ctx.stroke(); ctx.restore();
+              // cross
+              ctx.fillStyle = flashing ? "#ff2a2a" : "#88ffaa";
+              ctx.fillRect(-2, -8, 4, 14); ctx.fillRect(-7, -3, 14, 4);
+            } else if (!this.isBoss && this.enemyType === "shield") {
+              // Grey armored with visible shield arc in front
+              ctx.fillStyle = flashing ? "#ffffff" : "#5a5a7a";
+              ctx.strokeStyle = "rgba(0,0,0,0.78)"; ctx.lineWidth = 3;
+              ctx.beginPath();
+              ctx.moveTo(0, -13); ctx.quadraticCurveTo(12, -5, 12, 5);
+              ctx.quadraticCurveTo(11, 17, 0, 17);
+              ctx.quadraticCurveTo(-11, 17, -12, 5);
+              ctx.quadraticCurveTo(-12, -5, 0, -13);
+              ctx.closePath(); ctx.fill(); ctx.stroke();
+              // shield
+              ctx.save();
+              ctx.rotate(this._shieldAngle - Math.PI * 0.5);
+              ctx.fillStyle = flashing ? "#aaaaff" : "#c8d0ff";
+              ctx.strokeStyle = "rgba(0,0,0,0.8)"; ctx.lineWidth = 2.5;
+              ctx.beginPath();
+              ctx.moveTo(-10, -16); ctx.lineTo(10, -16);
+              ctx.lineTo(8, 0); ctx.lineTo(0, 6); ctx.lineTo(-8, 0);
+              ctx.closePath(); ctx.fill(); ctx.stroke();
+              // shield emblem
+              ctx.fillStyle = "rgba(80,120,255,0.7)";
+              ctx.beginPath(); ctx.arc(0, -10, 3, 0, TAU); ctx.fill();
+              ctx.restore();
+              // eyes
+              ctx.fillStyle = flashing ? "#ff2a2a" : "#aaaaff";
+              ctx.fillRect(-5, -7, 3, 3); ctx.fillRect(2, -7, 3, 3);
+            } else {
+              // Normal enemy OR boss body
+              ctx.beginPath();
+              const rr = this.isBoss ? 22 : 13;
+              const ww = this.isBoss ? 18 : 12;
+              const hh = this.isBoss ? 24 : 16;
+              ctx.moveTo(0, -rr);
+              ctx.quadraticCurveTo(ww, -rr + 3, ww, 0);
+              ctx.quadraticCurveTo(ww, hh, 0, hh);
+              ctx.quadraticCurveTo(-ww, hh, -ww, 0);
+              ctx.quadraticCurveTo(-ww, -rr + 3, 0, -rr);
+              ctx.closePath(); ctx.fill(); ctx.stroke();
+            }
 
-            // horns
-            ctx.fillStyle = flashing ? "#ff2a2a" : "#111623";
-            ctx.strokeStyle = "rgba(0,0,0,0.75)";
-            ctx.lineWidth = 3;
-            ctx.beginPath();
-            const hx = this.isBoss ? 10 : 7;
-            const hy = this.isBoss ? 17 : 11;
-            ctx.moveTo(-hx, -hy);
-            ctx.lineTo(-(hx + 7), -(hy + 7));
-            ctx.lineTo(-(hx - 1), -(hy + 6));
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.moveTo(hx, -hy);
-            ctx.lineTo(hx + 7, -(hy + 7));
-            ctx.lineTo(hx - 1, -(hy + 6));
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
+            // horns (normal + boss only)
+            if (this.isBoss || this.enemyType === "normal") {
+              ctx.fillStyle = flashing ? "#ff2a2a" : "#111623";
+              ctx.strokeStyle = "rgba(0,0,0,0.75)"; ctx.lineWidth = 3;
+              const hx = this.isBoss ? 10 : 7;
+              const hy = this.isBoss ? 17 : 11;
+              ctx.beginPath();
+              ctx.moveTo(-hx, -hy); ctx.lineTo(-(hx+7), -(hy+7)); ctx.lineTo(-(hx-1), -(hy+6));
+              ctx.closePath(); ctx.fill(); ctx.stroke();
+              ctx.beginPath();
+              ctx.moveTo(hx, -hy); ctx.lineTo(hx+7, -(hy+7)); ctx.lineTo(hx-1, -(hy+6));
+              ctx.closePath(); ctx.fill(); ctx.stroke();
+            }
 
             // bioluminescent core
             ctx.save();
@@ -1507,7 +1698,7 @@
 
             for (let i = 0; i < this.enemies.length; i++) {
               const e = this.enemies[i];
-              e.update(dt, player);
+              e.update(dt, player, this._world);
               if (e.flashFrames > 0) e.flashFrames -= 1;
             }
           }
@@ -1518,12 +1709,59 @@
             const y = player.y + Math.sin(angle) * outside;
 
             const t = this._difficulty;
-            const hp = 12 + Math.floor(t * 4.2);
-            const speed = 78 + t * 7.4;
+            // Pick enemy type based on difficulty tier
+            const roll = Math.random();
+            let type = "normal";
+            if (t >= 2) {
+              if (roll < 0.22) type = "runner";
+              else if (roll < 0.38 && t >= 3) type = "tank";
+              else if (roll < 0.52 && t >= 4) type = "bomber";
+              else if (roll < 0.64 && t >= 5) type = "healer";
+              else if (roll < 0.74 && t >= 6) type = "shield";
+            }
+
+            let hp, speed, touchDmg, r;
+            switch (type) {
+              case "runner":
+                hp = Math.max(4, Math.floor((12 + t * 4.2) * 0.35));
+                speed = (78 + t * 7.4) * 1.85;
+                touchDmg = 6 + Math.floor(Math.min(8, (t-1)*0.3));
+                r = 7;
+                break;
+              case "tank":
+                hp = Math.floor((12 + t * 4.2) * 2.8);
+                speed = (78 + t * 7.4) * 0.45;
+                touchDmg = 14 + Math.floor(Math.min(16, (t-1)*0.7));
+                r = 18;
+                break;
+              case "bomber":
+                hp = Math.max(6, Math.floor((12 + t * 4.2) * 0.55));
+                speed = (78 + t * 7.4) * 1.1;
+                touchDmg = 18 + Math.floor(Math.min(20, (t-1)*0.8));
+                r = 12;
+                break;
+              case "healer":
+                hp = Math.floor((12 + t * 4.2) * 1.4);
+                speed = (78 + t * 7.4) * 0.7;
+                touchDmg = 5;
+                r = 11;
+                break;
+              case "shield":
+                hp = Math.floor((12 + t * 4.2) * 1.6);
+                speed = (78 + t * 7.4) * 0.75;
+                touchDmg = 10 + Math.floor(Math.min(12, (t-1)*0.4));
+                r = 13;
+                break;
+              default:
+                hp = 12 + Math.floor(t * 4.2);
+                speed = 78 + t * 7.4;
+                touchDmg = 8 + Math.floor(Math.min(10, (t-1)*0.4));
+                r = 11;
+            }
             const e = this._pool.acquire();
-            e.reset(x, y, hp, speed);
-            e.r = 11;
-            e.touchDmg = 8 + Math.floor(Math.min(10, (t - 1) * 0.4));
+            e.reset(x, y, hp, speed, type);
+            e.r = r;
+            e.touchDmg = touchDmg;
             this.enemies.push(e);
           }
           spawnBoss(player, viewW, viewH, elapsed) {
@@ -1668,6 +1906,7 @@
             this.powerPool = new Pool(() => new PowerUp());
 
             this.enemies = new EnemyManager(this.enemyPool);
+            this.enemies._world = this; // reference for healer heal logic
             /** @type {Gem[]} */
             this.gems = [];
             /** @type {PowerUp[]} */
@@ -1899,7 +2138,7 @@
                 if (dx * dx + dy * dy <= rr * rr) {
                   pr.active = false;
 
-                  const died = e.takeDamage(pr.damage);
+                  const died = e.takeDamage(pr.damage, pr.x, pr.y);
                   const ft = this.textPool.acquire();
                   ft.reset(e.x + rand(-4, 4), e.y - 10 + rand(-2, 2), String(pr.damage), "#ffb22e");
                   this.floating.push(ft);
@@ -1997,9 +2236,37 @@
             }
           }
           _bossShoot(dt) {
+            // Phase 3 summon: boss spawns minions periodically
             const ens = this.enemies.enemies;
             for (let i = 0; i < ens.length; i++) {
               const e = ens[i];
+              if (!e.active || !e.isBoss) continue;
+              if (e._bossPhase === 2) {
+                e._summonCd = (e._summonCd || 0) - dt;
+                if (e._summonCd <= 0) {
+                  e._summonCd = 5.5;
+                  const count = 3;
+                  for (let s = 0; s < count; s++) {
+                    const a = rand(0, TAU);
+                    const md = e.r + 40 + s * 18;
+                    const mx = e.x + Math.cos(a) * md;
+                    const my = e.y + Math.sin(a) * md;
+                    const t = this.enemies._difficulty;
+                    const hp = Math.max(8, Math.floor((12 + t * 4.2) * 0.6));
+                    const spd = 78 + t * 7.4;
+                    const minion = this.enemies._pool.acquire();
+                    minion.reset(mx, my, hp, spd, "runner");
+                    minion.r = 8;
+                    minion.touchDmg = 7;
+                    this.enemies.enemies.push(minion);
+                  }
+                }
+              }
+            }
+            // Boss shooting per phase
+            const ens2 = this.enemies.enemies;
+            for (let i = 0; i < ens2.length; i++) {
+              const e = ens2[i];
               if (!e.active || !e.isBoss) continue;
 
               e._shotCd = Math.max(0, e._shotCd - dt);
@@ -2150,23 +2417,56 @@
             }
           }
           spawnPowerUpAt(x, y, isBossDrop) {
-            // Weighted types; boss favors stronger rewards.
+            if (isBossDrop) {
+              // Boss drop: 50% orbe de poder (daño permanente) | 50% curación masiva
+              if (Math.random() < 0.5) {
+                this._applyBossOrbeDePoder();
+              } else {
+                this._applyBossHeal();
+              }
+              // Visual burst at drop position
+              for (let k = 0; k < 18; k++) {
+                const a = rand(0, TAU);
+                const sp = rand(120, 380);
+                const part = this.particlePool.acquire();
+                const col = Math.random() < 0.5 ? "rgba(255, 220, 60, 0.95)" : "rgba(255, 80, 80, 0.95)";
+                part.reset(x + Math.cos(a)*8, y + Math.sin(a)*8, Math.cos(a)*sp, Math.sin(a)*sp, 2, rand(0.5, 0.9), col);
+                this.particles.push(part);
+              }
+              // Floating text
+              const ft = this.textPool.acquire();
+              ft.reset(x, y - 20, "★ BOSS DROP ★", "#ffe040");
+              this.floating.push(ft);
+              return;
+            }
+            // Normal drops
             const roll = Math.random();
             let type = "dmg";
-            if (isBossDrop) {
-              if (roll < 0.35) type = "dmg";
-              else if (roll < 0.65) type = "firerate";
-              else if (roll < 0.85) type = "magnet";
-              else type = "heal";
-            } else {
-              if (roll < 0.22) type = "heal";
-              else if (roll < 0.5) type = "magnet";
-              else if (roll < 0.78) type = "firerate";
-              else type = "dmg";
-            }
+            if (roll < 0.22) type = "heal";
+            else if (roll < 0.5) type = "magnet";
+            else if (roll < 0.78) type = "firerate";
+            else type = "dmg";
             const pu = this.powerPool.acquire();
             pu.reset(x, y, type);
             this.powerups.push(pu);
+          }
+          _applyBossOrbeDePoder() {
+            // Incremento permanente de daño (+3) y ligera mejora de cadencia
+            this.weapons.damage = Math.min(80, this.weapons.damage + 3);
+            this.weapons.fireRate = Math.max(0.09, this.weapons.fireRate * 0.92);
+            this.weapons.syncBases();
+            // Notificación
+            const ft = this.textPool.acquire();
+            ft.reset(this.player.x, this.player.y - 30, "+ORB PODER: DMG↑", "#ff9900");
+            this.floating.push(ft);
+          }
+          _applyBossHeal() {
+            // Curación masiva: restaura 40hp
+            const healed = Math.min(40, this.player.hpMax - this.player.hp);
+            this.player.hp = Math.min(this.player.hpMax, this.player.hp + 40);
+            const ft = this.textPool.acquire();
+            ft.reset(this.player.x, this.player.y - 30, `+${Math.round(healed)} CURACION`, "#44ff88");
+            this.floating.push(ft);
           }
           spawnPowerUpNearPlayer() {
             const angle = rand(0, TAU);
