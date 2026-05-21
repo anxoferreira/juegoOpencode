@@ -205,6 +205,59 @@
         font-weight: 700;
       }
 
+      .buffs-panel {
+        margin-top: 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+      }
+      .buff-row {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        font-size: 11px;
+        letter-spacing: 0.04em;
+        color: var(--ui-dim);
+        background: rgba(0,0,0,0.25);
+        border-radius: 7px;
+        padding: 4px 8px;
+        border: 1px solid rgba(255,255,255,0.07);
+      }
+      .buff-icon {
+        font-size: 13px;
+        line-height: 1;
+        flex-shrink: 0;
+      }
+      .buff-name {
+        flex: 1;
+        color: var(--ui-fg);
+        font-weight: 700;
+      }
+      .buff-timer {
+        font-size: 11px;
+        color: var(--ui-dim);
+        min-width: 28px;
+        text-align: right;
+      }
+      .buff-bar-wrap {
+        width: 52px;
+        height: 4px;
+        background: rgba(255,255,255,0.08);
+        border-radius: 3px;
+        overflow: hidden;
+        flex-shrink: 0;
+      }
+      .buff-bar-fill {
+        height: 100%;
+        border-radius: 3px;
+        transition: width 0.1s linear;
+      }
+      .buff-permanent {
+        font-size: 10px;
+        color: #ffe040;
+        letter-spacing: 0.06em;
+      }
+
       .hint {
         position: absolute;
         left: 12px;
@@ -230,6 +283,7 @@
             <span>XP <strong id="uiXp">0</strong>/<strong id="uiXpNeed">10</strong></span>
           </div>
           <div class="xp-bar"><div class="xp-fill" id="uiXpFill"></div></div>
+          <div class="buffs-panel" id="uiBuffsPanel"></div>
         </div>
 
         <div class="top-center">
@@ -1964,6 +2018,7 @@
               kills: document.getElementById("uiKills"),
               hp: document.getElementById("uiHp"),
               enemies: document.getElementById("uiEnemies"),
+              buffsPanel: document.getElementById("uiBuffsPanel"),
             };
 
             this._uiGo = {
@@ -2373,6 +2428,7 @@
             this.buffs.firerateT = 0;
             this.buffs.magnetT = 0;
             this.buffs.healT = 0;
+            this._orbCount = 0;
 
             for (let i = 0; i < this.particles.length; i++) this.particlePool.release(this.particles[i]);
             this.particles.length = 0;
@@ -2451,11 +2507,10 @@
             this.powerups.push(pu);
           }
           _applyBossOrbeDePoder() {
-            // Incremento permanente de daño (+3) y ligera mejora de cadencia
             this.weapons.damage = Math.min(80, this.weapons.damage + 3);
             this.weapons.fireRate = Math.max(0.09, this.weapons.fireRate * 0.92);
             this.weapons.syncBases();
-            // Notificación
+            this._orbCount = (this._orbCount || 0) + 1;
             const ft = this.textPool.acquire();
             ft.reset(this.player.x, this.player.y - 30, "+ORB PODER: DMG↑", "#ff9900");
             this.floating.push(ft);
@@ -2497,6 +2552,54 @@
             this._ui.enemies.textContent = String(this.enemies.enemies.length);
             const pct = this.player.xpNeed > 0 ? (this.player.xp / this.player.xpNeed) : 0;
             this._ui.xpFill.style.width = `${clamp(pct, 0, 1) * 100}%`;
+            this._renderBuffsPanel();
+          }
+          _renderBuffsPanel() {
+            const D = 20; // duración base de buffs temporales
+            const b = this.buffs;
+            const orbs = this._orbCount || 0;
+            const rows = [];
+
+            // Buffs temporales
+            const baseDmg = this.weapons._baseDamage;
+            const baseRate = this.weapons._baseFireRate;
+            const temps = [
+              { key: "dmgT",      label: "DMG",      icon: "⚔️", color: "#ff9900", maxT: D,
+                effect: `+${((4/Math.max(1,baseDmg))*100).toFixed(0)}%` },
+              { key: "firerateT", label: "CADENCIA",  icon: "⚡", color: "#4af2ff", maxT: D,
+                effect: "+20% vel." },
+              { key: "magnetT",   label: "IMÁN",      icon: "🧲", color: "#c080ff", maxT: D,
+                effect: "+60%" },
+              { key: "healT",     label: "REGEN",     icon: "💚", color: "#44ff88", maxT: D,
+                effect: "+1.5hp/s" },
+            ];
+            for (const t of temps) {
+              const timeLeft = b[t.key];
+              if (timeLeft > 0.05) {
+                const frac = clamp(timeLeft / t.maxT, 0, 1);
+                const secs = Math.ceil(timeLeft);
+                rows.push(`<div class="buff-row">
+                  <span class="buff-icon">${t.icon}</span>
+                  <span class="buff-name">${t.label} <span style="opacity:0.7;font-weight:400">${t.effect}</span></span>
+                  <div class="buff-bar-wrap">
+                    <div class="buff-bar-fill" style="width:${(frac*100).toFixed(1)}%;background:${t.color};box-shadow:0 0 6px ${t.color}"></div>
+                  </div>
+                  <span class="buff-timer">${secs}s</span>
+                </div>`);
+              }
+            }
+
+            // Permanentes: orbe de poder
+            if (orbs > 0) {
+              const totalDmgBonus = orbs * 3;
+              rows.push(`<div class="buff-row">
+                <span class="buff-icon">🔮</span>
+                <span class="buff-name">ORB PODER <span style="opacity:0.7;font-weight:400">+${totalDmgBonus} DMG</span></span>
+                <span class="buff-permanent">×${orbs} PERM</span>
+              </div>`);
+            }
+
+            this._ui.buffsPanel.innerHTML = rows.join("");
           }
           draw() {
             const ctx = this.ctx;
