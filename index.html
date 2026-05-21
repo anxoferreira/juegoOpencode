@@ -258,6 +258,24 @@
         letter-spacing: 0.06em;
       }
 
+      #muteBtn {
+        position: absolute;
+        right: 12px;
+        bottom: 10px;
+        background: rgba(10, 14, 20, 0.5);
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 8px;
+        padding: 6px 10px;
+        color: rgba(230,240,255,0.7);
+        font-family: inherit;
+        font-size: 13px;
+        cursor: pointer;
+        letter-spacing: 0.05em;
+        pointer-events: all;
+        transition: background 0.15s;
+      }
+      #muteBtn:hover { background: rgba(30,40,60,0.7); }
+
       .hint {
         position: absolute;
         left: 12px;
@@ -298,6 +316,7 @@
       </div>
 
       <div class="hint">Nocturna: Arcane Siege. WASD/Flechas: mover. Click izq: disparar hacia el cursor.</div>
+      <button id="muteBtn" title="Silenciar/Activar sonido">🔊 SFX</button>
 
       <div id="gameover">
         <div class="panel">
@@ -317,6 +336,194 @@
     <script>
       (() => {
         "use strict";
+
+        // ── Audio Engine ──────────────────────────────────────────────────
+        const SFX = (() => {
+          let ctx = null;
+          let muted = false;
+          function getCtx() {
+            if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
+            if (ctx.state === "suspended") ctx.resume();
+            return ctx;
+          }
+          const _cd = {};
+          function canPlay(key, ms) {
+            const now = performance.now();
+            if (_cd[key] && now - _cd[key] < ms) return false;
+            _cd[key] = now;
+            return true;
+          }
+          function play(fn) {
+            if (muted) return;
+            try { fn(getCtx()); } catch(e) {}
+          }
+          return {
+            toggleMute() { muted = !muted; return muted; },
+            isMuted() { return muted; },
+            // Disparo: pitido corto seco
+            shoot() {
+              if (!canPlay("shoot", 80)) return;
+              play(ac => {
+                const o = ac.createOscillator();
+                const g = ac.createGain();
+                o.connect(g); g.connect(ac.destination);
+                o.type = "square";
+                o.frequency.setValueAtTime(520, ac.currentTime);
+                o.frequency.exponentialRampToValueAtTime(220, ac.currentTime + 0.06);
+                g.gain.setValueAtTime(0.12, ac.currentTime);
+                g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.07);
+                o.start(ac.currentTime); o.stop(ac.currentTime + 0.08);
+              });
+            },
+            // Impacto en enemigo: golpe sordo
+            hit() {
+              if (!canPlay("hit", 55)) return;
+              play(ac => {
+                const o = ac.createOscillator();
+                const g = ac.createGain();
+                const f = ac.createBiquadFilter();
+                o.connect(f); f.connect(g); g.connect(ac.destination);
+                f.type = "bandpass"; f.frequency.value = 400;
+                o.type = "sawtooth";
+                o.frequency.setValueAtTime(180, ac.currentTime);
+                o.frequency.exponentialRampToValueAtTime(60, ac.currentTime + 0.05);
+                g.gain.setValueAtTime(0.18, ac.currentTime);
+                g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.06);
+                o.start(ac.currentTime); o.stop(ac.currentTime + 0.07);
+              });
+            },
+            // Muerte enemigo normal: pop
+            enemyDie() {
+              if (!canPlay("die", 70)) return;
+              play(ac => {
+                const o = ac.createOscillator();
+                const g = ac.createGain();
+                o.connect(g); g.connect(ac.destination);
+                o.type = "sine";
+                o.frequency.setValueAtTime(320, ac.currentTime);
+                o.frequency.exponentialRampToValueAtTime(80, ac.currentTime + 0.12);
+                g.gain.setValueAtTime(0.2, ac.currentTime);
+                g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + 0.13);
+                o.start(ac.currentTime); o.stop(ac.currentTime + 0.14);
+              });
+            },
+            // Muerte boss: explosión grave
+            bossDie() {
+              if (!canPlay("bossDie", 800)) return;
+              play(ac => {
+                const t = ac.currentTime;
+                // grave boom
+                const o1 = ac.createOscillator();
+                const g1 = ac.createGain();
+                o1.connect(g1); g1.connect(ac.destination);
+                o1.type = "sawtooth";
+                o1.frequency.setValueAtTime(120, t);
+                o1.frequency.exponentialRampToValueAtTime(25, t + 0.5);
+                g1.gain.setValueAtTime(0.35, t);
+                g1.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
+                o1.start(t); o1.stop(t + 0.56);
+                // ruido blanco
+                const bufSize = ac.sampleRate * 0.4;
+                const buf = ac.createBuffer(1, bufSize, ac.sampleRate);
+                const data = buf.getChannelData(0);
+                for (let i = 0; i < bufSize; i++) data[i] = (Math.random() * 2 - 1) * 0.3;
+                const src = ac.createBufferSource();
+                src.buffer = buf;
+                const gn = ac.createGain();
+                src.connect(gn); gn.connect(ac.destination);
+                gn.gain.setValueAtTime(0.25, t);
+                gn.gain.exponentialRampToValueAtTime(0.001, t + 0.4);
+                src.start(t); src.stop(t + 0.42);
+              });
+            },
+            // Daño recibido: crunch agudo
+            playerHurt() {
+              if (!canPlay("hurt", 180)) return;
+              play(ac => {
+                const t = ac.currentTime;
+                const o = ac.createOscillator();
+                const g = ac.createGain();
+                o.connect(g); g.connect(ac.destination);
+                o.type = "sawtooth";
+                o.frequency.setValueAtTime(880, t);
+                o.frequency.exponentialRampToValueAtTime(200, t + 0.09);
+                g.gain.setValueAtTime(0.22, t);
+                g.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+                o.start(t); o.stop(t + 0.11);
+              });
+            },
+            // Recoger powerup: chime ascendente
+            powerup() {
+              if (!canPlay("powerup", 250)) return;
+              play(ac => {
+                const t = ac.currentTime;
+                [0, 0.07, 0.14].forEach((delay, i) => {
+                  const o = ac.createOscillator();
+                  const g = ac.createGain();
+                  o.connect(g); g.connect(ac.destination);
+                  o.type = "sine";
+                  const freqs = [440, 554, 659];
+                  o.frequency.value = freqs[i];
+                  g.gain.setValueAtTime(0.15, t + delay);
+                  g.gain.exponentialRampToValueAtTime(0.001, t + delay + 0.18);
+                  o.start(t + delay); o.stop(t + delay + 0.2);
+                });
+              });
+            },
+            // Subir de nivel: acorde corto brillante
+            levelUp() {
+              if (!canPlay("levelUp", 400)) return;
+              play(ac => {
+                const t = ac.currentTime;
+                [523, 659, 784, 1047].forEach((freq, i) => {
+                  const o = ac.createOscillator();
+                  const g = ac.createGain();
+                  o.connect(g); g.connect(ac.destination);
+                  o.type = "sine";
+                  o.frequency.value = freq;
+                  g.gain.setValueAtTime(0.13, t + i * 0.06);
+                  g.gain.exponentialRampToValueAtTime(0.001, t + i * 0.06 + 0.28);
+                  o.start(t + i * 0.06); o.stop(t + i * 0.06 + 0.3);
+                });
+              });
+            },
+            // Game over: tono descendente
+            gameOver() {
+              if (!canPlay("gameOver", 1500)) return;
+              play(ac => {
+                const t = ac.currentTime;
+                [440, 349, 262, 196].forEach((freq, i) => {
+                  const o = ac.createOscillator();
+                  const g = ac.createGain();
+                  o.connect(g); g.connect(ac.destination);
+                  o.type = "sine";
+                  o.frequency.value = freq;
+                  g.gain.setValueAtTime(0.18, t + i * 0.18);
+                  g.gain.exponentialRampToValueAtTime(0.001, t + i * 0.18 + 0.35);
+                  o.start(t + i * 0.18); o.stop(t + i * 0.18 + 0.38);
+                });
+              });
+            },
+            // Aparición de boss: acorde oscuro tenso
+            bossSpawn() {
+              if (!canPlay("bossSpawn", 1500)) return;
+              play(ac => {
+                const t = ac.currentTime;
+                [110, 138, 165].forEach((freq, i) => {
+                  const o = ac.createOscillator();
+                  const g = ac.createGain();
+                  o.connect(g); g.connect(ac.destination);
+                  o.type = "sawtooth";
+                  o.frequency.value = freq;
+                  g.gain.setValueAtTime(0.0, t);
+                  g.gain.linearRampToValueAtTime(0.14, t + 0.12);
+                  g.gain.exponentialRampToValueAtTime(0.001, t + 0.7);
+                  o.start(t); o.stop(t + 0.72);
+                });
+              });
+            },
+          };
+        })();
 
         // ---------- Utilities ----------
         const TAU = Math.PI * 2;
@@ -726,6 +933,7 @@
               this.xp -= this.xpNeed;
               this.level += 1;
               this.xpNeed = Math.floor(10 * Math.pow(1.22, this.level - 1));
+              SFX.levelUp();
               // small power curve
               this.hpMax += 3;
               this.hp = Math.min(this.hpMax, this.hp + 8);
@@ -1003,6 +1211,7 @@
             if (this._touchCd <= 0 && dist < this.r + player.r) {
               player.takeDamage(this.touchDmg);
               this._touchCd = 0.55;
+              SFX.playerHurt();
             }
           }
           draw(ctx, cam, w, h) {
@@ -1581,6 +1790,7 @@
           }
           apply(player, world) {
             const D = 20; // seconds
+            SFX.powerup();
             switch (this.type) {
               case "dmg":
                 world.buffs.add("dmg", D);
@@ -1829,6 +2039,7 @@
             const speed = 66 + tier * 6;
             const e = this._pool.acquire();
             e.resetBoss(x, y, hp, speed);
+            SFX.bossSpawn();
             // Phase behavior baseline
             e._bossPhase = 0;
             this.enemies.push(e);
@@ -1888,6 +2099,7 @@
                 p.reset(player.x, player.y, aimDir.x, aimDir.y, this.damage);
                 this.projectiles.push(p);
                 this._cooldown = this.fireRate;
+                SFX.shoot();
               } else {
                 this._cooldown = 0.05;
               }
@@ -2150,6 +2362,7 @@
                 if (dx * dx + dy * dy <= rr * rr) {
                   this.player.takeDamage(b.damage);
                   b.active = false;
+                  SFX.playerHurt();
 
                   // tiny impact sparks
                   for (let k = 0; k < 6; k++) {
@@ -2194,6 +2407,7 @@
                   pr.active = false;
 
                   const died = e.takeDamage(pr.damage, pr.x, pr.y);
+                  if (!died) SFX.hit();
                   const ft = this.textPool.acquire();
                   ft.reset(e.x + rand(-4, 4), e.y - 10 + rand(-2, 2), String(pr.damage), "#ffb22e");
                   this.floating.push(ft);
@@ -2225,6 +2439,7 @@
 
                     // remove enemy via manager
                     const dead = this.enemies.killAt(j);
+                    if (dead.isBoss) SFX.bossDie(); else SFX.enemyDie();
 
                     // chance to drop a powerup on kills (boss guaranteed)
                     if (dead.isBoss || Math.random() < 0.045) {
@@ -2532,6 +2747,7 @@
           }
           _setGameOver() {
             this._gameOver = true;
+            SFX.gameOver();
             const mm = Math.floor(this._elapsed / 60);
             const ss = Math.floor(this._elapsed % 60);
             this._uiGo.time.textContent = `${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
@@ -2780,6 +2996,13 @@
         const canvas = document.getElementById("game");
         const world = new World(canvas);
         world.start();
+
+        // Mute button
+        const muteBtn = document.getElementById("muteBtn");
+        muteBtn.addEventListener("click", () => {
+          const muted = SFX.toggleMute();
+          muteBtn.textContent = muted ? "🔇 SFX" : "🔊 SFX";
+        });
       })();
     </script>
   </body>
