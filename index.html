@@ -1530,30 +1530,91 @@
         class Projectile {
           constructor() {
             this.active = false;
-            this.x = 0;
-            this.y = 0;
-            this.vx = 0;
-            this.vy = 0;
+            this.x = 0; this.y = 0;
+            this.vx = 0; this.vy = 0;
             this.r = 6;
             this.speed = 520;
             this.life = 0;
             this.lifeMax = 1.7;
             this.damage = 7;
+            // shot mode: "normal"|"laser"|"bounce"|"orbital"|"explosive"
+            this.shotMode = "normal";
+            this.piercing = false;   // laser
+            this.bounces = 0;        // bounce
+            this._orbitAngle = 0;    // orbital
+            this._orbitOwnerX = 0;
+            this._orbitOwnerY = 0;
+            this._orbitR = 0;
+            this._orbitSpeed = 0;
+            this.exploded = false;   // explosive
           }
-          reset(x, y, dirX, dirY, damage) {
+          reset(x, y, dirX, dirY, damage, shotMode) {
             this.active = true;
-            this.x = x;
-            this.y = y;
-            this.vx = dirX * this.speed;
-            this.vy = dirY * this.speed;
+            this.x = x; this.y = y;
             this.life = 0;
             this.damage = damage;
+            this.shotMode = shotMode || "normal";
+            this.exploded = false;
+            this.piercing = false;
+            this.bounces = 0;
+            if (this.shotMode === "laser") {
+              this.speed = 1100;
+              this.r = 4;
+              this.lifeMax = 1.1;
+              this.piercing = true;
+              this.vx = dirX * this.speed;
+              this.vy = dirY * this.speed;
+            } else if (this.shotMode === "bounce") {
+              this.speed = 480;
+              this.r = 6;
+              this.lifeMax = 2.8;
+              this.bounces = 2;
+              this.vx = dirX * this.speed;
+              this.vy = dirY * this.speed;
+            } else if (this.shotMode === "orbital") {
+              this.speed = 0;
+              this.r = 9;
+              this.lifeMax = 22.0;
+              this._orbitAngle = Math.atan2(dirY, dirX);
+              this._orbitOwnerX = x; this._orbitOwnerY = y;
+              this._orbitR = 115;
+              this._orbitSpeed = 2.2;
+              this.vx = 0; this.vy = 0;
+            } else if (this.shotMode === "explosive") {
+              this.speed = 280;
+              this.r = 7;
+              this.lifeMax = 2.2;
+              this.vx = dirX * this.speed;
+              this.vy = dirY * this.speed;
+            } else {
+              this.speed = 520;
+              this.r = 6;
+              this.lifeMax = 1.7;
+              this.vx = dirX * this.speed;
+              this.vy = dirY * this.speed;
+            }
+          }
+          updateOrbital(dt, playerX, playerY) {
+            this._orbitOwnerX = playerX;
+            this._orbitOwnerY = playerY;
+            this._orbitAngle += this._orbitSpeed * dt;
+            this.x = playerX + Math.cos(this._orbitAngle) * this._orbitR;
+            this.y = playerY + Math.sin(this._orbitAngle) * this._orbitR;
+          }
+          bounceOff(normalX, normalY) {
+            if (this.bounces <= 0) { this.active = false; return; }
+            const dot = this.vx * normalX + this.vy * normalY;
+            this.vx -= 2 * dot * normalX;
+            this.vy -= 2 * dot * normalY;
+            this.bounces--;
           }
           update(dt) {
             if (!this.active) return;
             this.life += dt;
-            this.x += this.vx * dt;
-            this.y += this.vy * dt;
+            if (this.shotMode !== "orbital") {
+              this.x += this.vx * dt;
+              this.y += this.vy * dt;
+            }
             if (this.life >= this.lifeMax) this.active = false;
           }
           draw(ctx, cam, w, h) {
@@ -1561,27 +1622,101 @@
             const p = cam.worldToScreen(this.x, this.y, w, h);
             ctx.save();
             ctx.translate(p.x, p.y);
-            // arcane bolt: diamond + glow
-            ctx.save();
-            ctx.shadowColor = "rgba(80,220,255,0.65)";
-            ctx.shadowBlur = 10;
-            ctx.shadowOffsetX = 0;
-            ctx.shadowOffsetY = 0;
-            ctx.fillStyle = "rgba(60, 210, 255, 0.95)";
-            ctx.strokeStyle = "rgba(0,0,0,0.78)";
-            ctx.lineWidth = 3;
-            ctx.beginPath();
-            ctx.moveTo(0, -this.r);
-            ctx.lineTo(this.r + 2, 0);
-            ctx.lineTo(0, this.r);
-            ctx.lineTo(-this.r - 2, 0);
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
-            ctx.restore();
 
-            ctx.fillStyle = "rgba(255,255,255,0.9)";
-            ctx.fillRect(-1, -1, 2, 2);
+            if (this.shotMode === "laser") {
+              // elongated electric bolt, green-white
+              const angle = Math.atan2(this.vy, this.vx);
+              ctx.rotate(angle);
+              ctx.save();
+              ctx.shadowColor = "rgba(180,255,100,0.8)";
+              ctx.shadowBlur = 14;
+              ctx.fillStyle = "rgba(200, 255, 120, 0.97)";
+              ctx.strokeStyle = "rgba(0,0,0,0.5)";
+              ctx.lineWidth = 1.5;
+              ctx.beginPath();
+              ctx.ellipse(0, 0, 14, 3, 0, 0, TAU);
+              ctx.fill(); ctx.stroke();
+              ctx.restore();
+              ctx.fillStyle = "rgba(255,255,255,0.95)";
+              ctx.fillRect(-3, -1, 6, 2);
+            } else if (this.shotMode === "bounce") {
+              // pinkish rhombus with trail tint
+              ctx.save();
+              ctx.shadowColor = "rgba(255,100,220,0.7)";
+              ctx.shadowBlur = 12;
+              ctx.fillStyle = "rgba(255, 80, 210, 0.97)";
+              ctx.strokeStyle = "rgba(0,0,0,0.6)";
+              ctx.lineWidth = 2.5;
+              ctx.beginPath();
+              ctx.moveTo(0, -this.r - 1);
+              ctx.lineTo(this.r + 2, 0);
+              ctx.lineTo(0, this.r + 1);
+              ctx.lineTo(-this.r - 2, 0);
+              ctx.closePath();
+              ctx.fill(); ctx.stroke();
+              ctx.restore();
+              // bounce counter dot
+              if (this.bounces > 0) {
+                ctx.fillStyle = "rgba(255,255,255,0.9)";
+                ctx.fillRect(-1, -1, 2, 2);
+              }
+            } else if (this.shotMode === "orbital") {
+              // golden spinning orb
+              ctx.save();
+              ctx.shadowColor = "rgba(255,200,40,0.85)";
+              ctx.shadowBlur = 16;
+              ctx.fillStyle = "rgba(255, 200, 40, 0.97)";
+              ctx.strokeStyle = "rgba(0,0,0,0.6)";
+              ctx.lineWidth = 2.5;
+              ctx.beginPath();
+              ctx.arc(0, 0, this.r, 0, TAU);
+              ctx.fill(); ctx.stroke();
+              ctx.restore();
+              // rotating cross inside
+              const ra = this.life * 4;
+              ctx.save();
+              ctx.rotate(ra);
+              ctx.fillStyle = "rgba(255,255,180,0.85)";
+              ctx.fillRect(-4, -1, 8, 2);
+              ctx.fillRect(-1, -4, 2, 8);
+              ctx.restore();
+            } else if (this.shotMode === "explosive") {
+              // red heavy orb, pulsing
+              const pulse = Math.sin(this.life * 12) * 0.12 + 1;
+              ctx.save();
+              ctx.scale(pulse, pulse);
+              ctx.shadowColor = "rgba(255,60,0,0.85)";
+              ctx.shadowBlur = 18;
+              ctx.fillStyle = "rgba(255, 60, 0, 0.97)";
+              ctx.strokeStyle = "rgba(0,0,0,0.65)";
+              ctx.lineWidth = 3;
+              ctx.beginPath();
+              ctx.arc(0, 0, this.r, 0, TAU);
+              ctx.fill(); ctx.stroke();
+              ctx.restore();
+              ctx.fillStyle = "rgba(255,200,100,0.9)";
+              ctx.beginPath();
+              ctx.arc(-2, -2, 2.5, 0, TAU);
+              ctx.fill();
+            } else {
+              // normal arcane bolt: diamond + glow
+              ctx.save();
+              ctx.shadowColor = "rgba(80,220,255,0.65)";
+              ctx.shadowBlur = 10;
+              ctx.fillStyle = "rgba(60, 210, 255, 0.95)";
+              ctx.strokeStyle = "rgba(0,0,0,0.78)";
+              ctx.lineWidth = 3;
+              ctx.beginPath();
+              ctx.moveTo(0, -this.r);
+              ctx.lineTo(this.r + 2, 0);
+              ctx.lineTo(0, this.r);
+              ctx.lineTo(-this.r - 2, 0);
+              ctx.closePath();
+              ctx.fill(); ctx.stroke();
+              ctx.restore();
+              ctx.fillStyle = "rgba(255,255,255,0.9)";
+              ctx.fillRect(-1, -1, 2, 2);
+            }
             ctx.restore();
           }
         }
@@ -1808,6 +1943,36 @@
                 world.buffs.add("heal", D);
                 world._spawnPickupText(this.x, this.y, "+VIDA (20s)", "#ff4b6a");
                 break;
+              case "shot_double":
+              case "shot_laser":
+              case "shot_bounce":
+              case "shot_explosive": {
+                const shotLabel = { shot_double:"DOBLE", shot_laser:"LÁSER", shot_bounce:"REBOTE", shot_explosive:"EXPLOSIVO" };
+                world.weapons.shotMode = this.type.replace("shot_", "");
+                world.weapons.shotModeT = D;
+                world._spawnPickupText(this.x, this.y, `DISPARO: ${shotLabel[this.type]}`, "#ffe040");
+                break;
+              }
+              case "shot_orbital": {
+                world.weapons.shotMode = "orbital";
+                world.weapons.shotModeT = D;
+                // Limpiar orbes viejos
+                const projs = world.weapons.projectiles;
+                for (let oi = projs.length - 1; oi >= 0; oi--) {
+                  if (projs[oi].shotMode === "orbital") projs[oi].active = false;
+                }
+                // Spawn 8 orbes equidistantes inmediatamente
+                const N = 8;
+                for (let oi = 0; oi < N; oi++) {
+                  const angle = (oi / N) * Math.PI * 2;
+                  const orb = world.weapons._projPool.acquire();
+                  orb.reset(player.x, player.y, Math.cos(angle), Math.sin(angle), world.weapons.damage * 0.7, "orbital");
+                  orb._orbitAngle = angle;
+                  world.weapons.projectiles.push(orb);
+                }
+                world._spawnPickupText(this.x, this.y, "DISPARO: ORBITAL", "#ffc828");
+                break;
+              }
               default:
                 break;
             }
@@ -1838,6 +2003,11 @@
             else if (this.type === "firerate") fill = "rgba(80,220,255,0.95)";
             else if (this.type === "magnet") fill = "rgba(57,217,138,0.95)";
             else if (this.type === "heal") fill = "rgba(255, 75, 106, 0.95)";
+            else if (this.type === "shot_double")   fill = "rgba(255, 255, 80, 0.97)";
+            else if (this.type === "shot_laser")    fill = "rgba(160, 255, 80, 0.97)";
+            else if (this.type === "shot_bounce")   fill = "rgba(255, 80, 210, 0.97)";
+            else if (this.type === "shot_orbital")  fill = "rgba(255, 200, 40, 0.97)";
+            else if (this.type === "shot_explosive")fill = "rgba(255, 80, 0, 0.97)";
 
             // Orb core + rim
             const r = this.r;
@@ -1908,6 +2078,36 @@
             } else if (this.type === "heal") {
               ctx.fillRect(-1, -7, 2, 14);
               ctx.fillRect(-7, -1, 14, 2);
+            } else if (this.type === "shot_double") {
+              // dos líneas paralelas
+              ctx.fillRect(-5, -6, 2, 12);
+              ctx.fillRect(3, -6, 2, 12);
+            } else if (this.type === "shot_laser") {
+              // flecha larga horizontal
+              ctx.fillRect(-7, -1, 14, 2);
+              ctx.fillRect(3, -4, 2, 8);
+            } else if (this.type === "shot_bounce") {
+              // zigzag
+              ctx.fillRect(-6, -6, 4, 2);
+              ctx.fillRect(-2, -4, 2, 8);
+              ctx.fillRect(0, 4, 4, 2);
+            } else if (this.type === "shot_orbital") {
+              // círculo pequeño orbitando
+              ctx.beginPath();
+              ctx.arc(0, 0, 5, 0, TAU);
+              ctx.stroke();
+              ctx.beginPath();
+              ctx.arc(5, 0, 2, 0, TAU);
+              ctx.fill();
+            } else if (this.type === "shot_explosive") {
+              // estrella de explosión 4 puntas
+              ctx.fillRect(-1, -7, 2, 14);
+              ctx.fillRect(-7, -1, 14, 2);
+              ctx.save();
+              ctx.rotate(Math.PI / 4);
+              ctx.fillRect(-1, -5, 2, 10);
+              ctx.fillRect(-5, -1, 10, 2);
+              ctx.restore();
             }
 
             // tiny rune dots
@@ -2067,9 +2267,11 @@
             this.fireRate = 0.24;
             this.damage = 7;
             this._lastAppliedLevel = 1;
-
             this._baseFireRate = this.fireRate;
             this._baseDamage = this.damage;
+            // shot mode powerup
+            this.shotMode = "normal";  // "normal"|"double"|"laser"|"bounce"|"orbital"|"explosive"
+            this.shotModeT = 0;        // seconds remaining
           }
           syncBases() {
             // Keep bases aligned with any permanent progression.
@@ -2090,18 +2292,57 @@
             this.fireRate = Math.max(0.11, this.fireRate * Math.pow(0.975, gained));
             this.syncBases();
           }
+          _spawnProj(x, y, dx, dy, dmg, mode) {
+            const p = this._projPool.acquire();
+            p.reset(x, y, dx, dy, dmg, mode);
+            this.projectiles.push(p);
+          }
           update(dt, player, aimDir, viewW, viewH, firing) {
             this.applyPlayerScaling(player);
+            // Tick shot mode timer
+            if (this.shotModeT > 0) {
+              this.shotModeT = Math.max(0, this.shotModeT - dt);
+              if (this.shotModeT <= 0) this.shotMode = "normal";
+            }
             this._cooldown = Math.max(0, this._cooldown - dt);
             if (firing && this._cooldown <= 0) {
               if (aimDir?.d > 0) {
-                const p = this._projPool.acquire();
-                p.reset(player.x, player.y, aimDir.x, aimDir.y, this.damage);
-                this.projectiles.push(p);
-                this._cooldown = this.fireRate;
+                const mode = this.shotMode;
+                const dmg = this.damage;
+                const px = player.x, py = player.y;
+                const ax = aimDir.x, ay = aimDir.y;
+                if (mode === "double") {
+                  // two parallel bolts offset perpendicular
+                  const px2 = -ay * 10, py2 = ax * 10;
+                  this._spawnProj(px + px2, py + py2, ax, ay, dmg, "normal");
+                  this._spawnProj(px - px2, py - py2, ax, ay, dmg, "normal");
+                } else if (mode === "orbital") {
+                  // Orbital activo: disparar normal y reponer orbes perdidos
+                  this._spawnProj(px, py, ax, ay, dmg, "normal");
+                  // Reponer orbes si hay menos de 8
+                  const orbiters = this.projectiles.filter(p => p.active && p.shotMode === "orbital").length;
+                  if (orbiters < 8) {
+                    const angle = (orbiters / 8) * Math.PI * 2;
+                    const orb = this._projPool.acquire();
+                    orb.reset(px, py, Math.cos(angle), Math.sin(angle), dmg * 0.7, "orbital");
+                    orb._orbitAngle = angle;
+                    this.projectiles.push(orb);
+                  }
+                } else {
+                  this._spawnProj(px, py, ax, ay, dmg * (mode === "explosive" ? 1.5 : mode === "laser" ? 0.7 : 1), mode);
+                }
+                this._cooldown = this.fireRate * (mode === "double" ? 1.25 : 1);
                 SFX.shoot();
               } else {
                 this._cooldown = 0.05;
+              }
+            }
+
+            // Update orbitals with player position
+            for (let i = 0; i < this.projectiles.length; i++) {
+              const pr = this.projectiles[i];
+              if (pr.active && pr.shotMode === "orbital") {
+                pr.updateOrbital(dt, player.x, player.y);
               }
             }
 
@@ -2110,17 +2351,18 @@
               const pr = this.projectiles[i];
               pr.update(dt);
 
-              // trail particles (cheap)
+              // trail particles
               if (pr.active && Math.random() < 0.55) {
+                const trailCol = pr.shotMode === "laser" ? "rgba(180,255,100,0.85)"
+                  : pr.shotMode === "bounce" ? "rgba(255,80,210,0.85)"
+                  : pr.shotMode === "orbital" ? "rgba(255,200,40,0.85)"
+                  : pr.shotMode === "explosive" ? "rgba(255,80,0,0.85)"
+                  : "rgba(80,220,255,0.95)";
                 const part = this._particlePool.acquire();
                 part.reset(
-                  pr.x + rand(-2, 2),
-                  pr.y + rand(-2, 2),
-                  rand(-30, 30),
-                  rand(-30, 30),
-                  1,
-                  rand(0.18, 0.26),
-                  "rgba(80, 220, 255, 0.95)"
+                  pr.x + rand(-2, 2), pr.y + rand(-2, 2),
+                  rand(-30, 30), rand(-30, 30),
+                  1, rand(0.12, 0.22), trailCol
                 );
                 this._activeParticles.push(part);
               }
@@ -2351,6 +2593,29 @@
 
             this._bossShoot(dt);
 
+            // proj vs obstacle: bounce or deactivate
+            for (let i = 0; i < this.weapons.projectiles.length; i++) {
+              const pr = this.weapons.projectiles[i];
+              if (!pr.active || pr.shotMode === "orbital") continue;
+              for (let j = 0; j < this.obstacles.length; j++) {
+                const o = this.obstacles[j];
+                const odx = pr.x - o.x, ody = pr.y - o.y;
+                const minD = pr.r + o.r;
+                if (odx*odx + ody*ody < minD*minD) {
+                  if (pr.shotMode === "bounce") {
+                    const d = Math.sqrt(odx*odx + ody*ody) || 1;
+                    pr.bounceOff(odx/d, ody/d);
+                    // push out
+                    pr.x = o.x + (odx/d) * (minD + 1);
+                    pr.y = o.y + (ody/d) * (minD + 1);
+                  } else {
+                    pr.active = false;
+                  }
+                  break;
+                }
+              }
+            }
+
             // enemy bullets
             for (let i = 0; i < this.enemyBullets.length; i++) {
               const b = this.enemyBullets[i];
@@ -2404,22 +2669,44 @@
                 const dy = e.y - pr.y;
                 const rr = e.r + pr.r;
                 if (dx * dx + dy * dy <= rr * rr) {
-                  pr.active = false;
+                  // Piercing (laser): don't deactivate, just damage
+                  if (!pr.piercing) pr.active = false;
 
                   const died = e.takeDamage(pr.damage, pr.x, pr.y);
                   if (!died) SFX.hit();
                   const ft = this.textPool.acquire();
-                  ft.reset(e.x + rand(-4, 4), e.y - 10 + rand(-2, 2), String(pr.damage), "#ffb22e");
+                  ft.reset(e.x + rand(-4, 4), e.y - 10 + rand(-2, 2), String(pr.damage | 0), "#ffb22e");
                   this.floating.push(ft);
 
+                  // Explosive: AOE burst on impact
+                  if (pr.shotMode === "explosive" && !pr.exploded) {
+                    pr.exploded = true;
+                    pr.active = false;
+                    const explR = 80;
+                    for (let ei = 0; ei < ens.length; ei++) {
+                      const ae = ens[ei];
+                      if (!ae.active || ae === e) continue;
+                      const adx = ae.x - pr.x, ady = ae.y - pr.y;
+                      if (adx*adx + ady*ady <= explR*explR) {
+                        ae.takeDamage(pr.damage * 0.6, pr.x, pr.y);
+                      }
+                    }
+                    // explosion particles
+                    for (let k = 0; k < 14; k++) {
+                      const a = rand(0, TAU);
+                      const sp = rand(180, 420);
+                      const part = this.particlePool.acquire();
+                      part.reset(pr.x + Math.cos(a)*8, pr.y + Math.sin(a)*8, Math.cos(a)*sp, Math.sin(a)*sp, 3, rand(0.3, 0.55), "rgba(255,120,0,0.95)");
+                      this.particles.push(part);
+                    }
+                  }
+
                   if (died) {
-                    // gems
                     const g = this.gemPool.acquire();
                     const val = e.isBoss ? (18 + randInt(0, 6)) : (1 + ((Math.random() < 0.15) | 0));
                     g.reset(e.x, e.y, val);
                     this.gems.push(g);
 
-                    // particles: 8-12 radial burst with deceleration and fade
                     const count = randInt(8, 12);
                     for (let k = 0; k < count; k++) {
                       const a = rand(0, TAU);
@@ -2428,25 +2715,21 @@
                       part.reset(
                         e.x + Math.cos(a) * rand(0, 6),
                         e.y + Math.sin(a) * rand(0, 6),
-                        Math.cos(a) * sp,
-                        Math.sin(a) * sp,
-                        randInt(1, 2),
-                        rand(0.35, 0.6),
+                        Math.cos(a) * sp, Math.sin(a) * sp,
+                        randInt(1, 2), rand(0.35, 0.6),
                         Math.random() < 0.55 ? "rgba(255, 190, 70, 0.95)" : "rgba(255, 80, 120, 0.95)"
                       );
                       this.particles.push(part);
                     }
 
-                    // remove enemy via manager
                     const dead = this.enemies.killAt(j);
                     if (dead.isBoss) SFX.bossDie(); else SFX.enemyDie();
 
-                    // chance to drop a powerup on kills (boss guaranteed)
                     if (dead.isBoss || Math.random() < 0.045) {
                       this.spawnPowerUpAt(dead.x, dead.y, dead.isBoss);
                     }
                   }
-                  break;
+                  if (!pr.piercing) break;
                 }
               }
             }
@@ -2644,6 +2927,8 @@
             this.buffs.magnetT = 0;
             this.buffs.healT = 0;
             this._orbCount = 0;
+            this.weapons.shotMode = "normal";
+            this.weapons.shotModeT = 0;
 
             for (let i = 0; i < this.particles.length; i++) this.particlePool.release(this.particles[i]);
             this.particles.length = 0;
@@ -2710,13 +2995,18 @@
               this.floating.push(ft);
               return;
             }
-            // Normal drops
+            // Normal drops — incluye tipos de disparo (~30% de chance total)
             const roll = Math.random();
             let type = "dmg";
-            if (roll < 0.22) type = "heal";
-            else if (roll < 0.5) type = "magnet";
-            else if (roll < 0.78) type = "firerate";
-            else type = "dmg";
+            if (roll < 0.14) type = "heal";
+            else if (roll < 0.28) type = "magnet";
+            else if (roll < 0.42) type = "firerate";
+            else if (roll < 0.50) type = "dmg";
+            else if (roll < 0.62) type = "shot_double";
+            else if (roll < 0.74) type = "shot_laser";
+            else if (roll < 0.84) type = "shot_bounce";
+            else if (roll < 0.92) type = "shot_orbital";
+            else type = "shot_explosive";
             const pu = this.powerPool.acquire();
             pu.reset(x, y, type);
             this.powerups.push(pu);
@@ -2803,6 +3093,24 @@
                   <span class="buff-timer">${secs}s</span>
                 </div>`);
               }
+            }
+
+            // Modo de disparo activo
+            const sm = this.weapons.shotMode;
+            const smT = this.weapons.shotModeT;
+            if (sm !== "normal" && smT > 0) {
+              const smNames = { double:"DOBLE", laser:"LÁSER", bounce:"REBOTE", orbital:"ORBITAL", explosive:"EXPLOSIVO" };
+              const smColors = { double:"#ffff50", laser:"#a0ff50", bounce:"#ff50d2", orbital:"#ffc828", explosive:"#ff5000" };
+              const smFrac = clamp(smT / 20, 0, 1);
+              const smCol = smColors[sm] || "#ffe040";
+              rows.push(`<div class="buff-row">
+                <span class="buff-icon">🔫</span>
+                <span class="buff-name" style="color:${smCol}">${smNames[sm] || sm}</span>
+                <div class="buff-bar-wrap">
+                  <div class="buff-bar-fill" style="width:${(smFrac*100).toFixed(1)}%;background:${smCol};box-shadow:0 0 6px ${smCol}"></div>
+                </div>
+                <span class="buff-timer">${Math.ceil(smT)}s</span>
+              </div>`);
             }
 
             // Permanentes: orbe de poder
