@@ -1,10 +1,14 @@
 name: opencode
+<<<<<<< HEAD
 
+=======
+>>>>>>> 4da295adde410a0055830929276d9bac638248cc
 on:
   issue_comment:
     types: [created]
   pull_request_review_comment:
     types: [created]
+<<<<<<< HEAD
 
 jobs:
   opencode:
@@ -31,3 +35,23 @@ jobs:
           OPENCODE_API_KEY: ${{ secrets.OPENCODE_API_KEY }}
         with:
           model: opencode/big-pickle
+=======
+jobs:
+  opencode:
+    if: |
+      contains(github.event.comment.body, '/oc') ||
+      contains(github.event.comment.body, '/opencode')
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+      - name: Run OpenCode
+        uses: anomalyco/opencode/github@latest
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+>>>>>>> 4da295adde410a0055830929276d9bac638248cc
